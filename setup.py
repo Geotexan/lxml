@@ -6,6 +6,10 @@ import fnmatch
 # for command line options and supported environment variables, please
 # see the end of 'setupinfo.py'
 
+if sys.version_info < (2, 6) or sys.version_info[:2] in [(3, 0), (3, 1)]:
+    print("This lxml version requires Python 2.6, 2.7, 3.2 or later.")
+    sys.exit(1)
+
 try:
     from setuptools import setup
 except ImportError:
@@ -23,9 +27,9 @@ STATIC_CFLAGS = []
 STATIC_BINARIES = []
 
 # create lxml-version.h file
-svn_version = versioninfo.svn_version()
-versioninfo.create_version_h(svn_version)
-print("Building lxml version %s." % svn_version)
+versioninfo.create_version_h()
+lxml_version = versioninfo.version()
+print("Building lxml version %s." % lxml_version)
 
 OPTION_RUN_TESTS = setupinfo.has_option('run-tests')
 
@@ -48,6 +52,23 @@ if versioninfo.is_pre_release():
 extra_options = {}
 if 'setuptools' in sys.modules:
     extra_options['zip_safe'] = False
+
+    try:
+        import pkg_resources
+    except ImportError:
+        pass
+    else:
+        f = open("requirements.txt", "r")
+        try:
+            deps = [str(req) for req in pkg_resources.parse_requirements(f)]
+        finally:
+            f.close()
+        extra_options['extras_require'] = {
+            'source': deps,
+            'cssselect': 'cssselect>=0.7',
+            'html5': 'html5lib',
+            'htmlsoup': 'BeautifulSoup4',
+        }
 
 extra_options.update(setupinfo.extra_setup_args())
 
@@ -152,14 +173,16 @@ def setup_extra_options():
 
 setup(
     name = "lxml",
-    version = versioninfo.version(),
+    version = lxml_version,
     author="lxml dev team",
     author_email="lxml-dev@lxml.de",
     maintainer="lxml dev team",
     maintainer_email="lxml-dev@lxml.de",
     url="http://lxml.de/",
-    download_url="http://pypi.python.org/packages/source/l/lxml/lxml-%s.tar.gz" % versioninfo.version(),
-    bugtrack_url="https://bugs.launchpad.net/lxml",
+    # Commented out because this causes distutils to emit warnings
+    # `Unknown distribution option: 'bugtrack_url'`
+    # which distract folks from real causes of problems when troubleshooting
+    # bugtrack_url="https://bugs.launchpad.net/lxml",
 
     description="Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API.",
 
@@ -193,14 +216,13 @@ an appropriate version of Cython installed.
     'License :: OSI Approved :: BSD License',
     'Programming Language :: Cython',
     'Programming Language :: Python :: 2',
-    'Programming Language :: Python :: 2.4',
-    'Programming Language :: Python :: 2.5',
     'Programming Language :: Python :: 2.6',
     'Programming Language :: Python :: 2.7',
     'Programming Language :: Python :: 3',
-    'Programming Language :: Python :: 3.1',
     'Programming Language :: Python :: 3.2',
     'Programming Language :: Python :: 3.3',
+    'Programming Language :: Python :: 3.4',
+    'Programming Language :: Python :: 3.5',
     'Programming Language :: C',
     'Operating System :: OS Independent',
     'Topic :: Text Processing :: Markup :: HTML',

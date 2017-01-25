@@ -63,6 +63,7 @@ cdef class _SaxParserContext(_ParserContext):
     u"""This class maps SAX2 events to parser target events.
     """
     cdef _SaxParserTarget _target
+    cdef _BaseParser _parser
     cdef xmlparser.startElementNsSAX2Func _origSaxStart
     cdef xmlparser.endElementNsSAX2Func   _origSaxEnd
     cdef xmlparser.startElementSAXFunc    _origSaxStartNoNs
@@ -84,9 +85,10 @@ cdef class _SaxParserContext(_ParserContext):
     cdef _Element  _root
     cdef _MultiTagMatcher _matcher
 
-    def __cinit__(self):
+    def __cinit__(self, _BaseParser parser):
         self._ns_stack = []
         self._node_stack = []
+        self._parser = parser
         self.events_iterator = _ParseEventsIterator()
 
     cdef void _setSaxParserTarget(self, _SaxParserTarget target):
@@ -180,7 +182,10 @@ cdef class _SaxParserContext(_ParserContext):
             self._matcher = _MultiTagMatcher(tag)
 
     cdef int startDocument(self, xmlDoc* c_doc) except -1:
-        self._doc = _documentFactory(c_doc, None)
+        try:
+            self._doc = _documentFactory(c_doc, self._parser)
+        finally:
+            self._parser = None  # clear circular reference ASAP
         if self._matcher is not None:
             self._matcher.cacheTags(self._doc, True) # force entry in libxml2 dict
         return 0
@@ -195,12 +200,21 @@ cdef class _SaxParserContext(_ParserContext):
         self.events_iterator._events.append( (event, node) )
         return 0
 
+    cdef int flushEvents(self) except -1:
+        events = self.events_iterator._events
+        while self._node_stack:
+            events.append( ('end', self._node_stack.pop()) )
+            _pushSaxNsEndEvents(self)
+        while self._ns_stack:
+            _pushSaxNsEndEvents(self)
+
     cdef void _handleSaxException(self, xmlparser.xmlParserCtxt* c_ctxt):
         if c_ctxt.errNo == xmlerror.XML_ERR_OK:
             c_ctxt.errNo = xmlerror.XML_ERR_INTERNAL_ERROR
         # stop parsing immediately
         c_ctxt.wellFormed = 0
         c_ctxt.disableSAX = 1
+        c_ctxt.instate = xmlparser.XML_PARSER_EOF
         self._store_raised()
 
 
@@ -253,7 +267,7 @@ cdef void _handleSaxStart(
     cdef int i
     cdef size_t c_len
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -274,6 +288,8 @@ cdef void _handleSaxStart(
                                c_localname, None)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxTargetStart(
@@ -285,7 +301,7 @@ cdef void _handleSaxTargetStart(
     cdef int i
     cdef size_t c_len
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -297,7 +313,7 @@ cdef void _handleSaxTargetStart(
             if c_ctxt.loadsubset & xmlparser.XML_COMPLETE_ATTRS == 0:
                 c_nb_attributes -= c_nb_defaulted
         if c_nb_attributes == 0:
-            attrib = EMPTY_READ_ONLY_DICT
+            attrib = IMMUTABLE_EMPTY_MAPPING
         else:
             attrib = {}
             for i in xrange(c_nb_attributes):
@@ -311,10 +327,10 @@ cdef void _handleSaxTargetStart(
                 attrib[name] = value
                 c_attributes += 5
         if c_nb_namespaces == 0:
-            nsmap = EMPTY_READ_ONLY_DICT
+            nsmap = IMMUTABLE_EMPTY_MAPPING
         else:
             nsmap = {}
-            for i in xrange(c_nb_attributes):
+            for i in xrange(c_nb_namespaces):
                 prefix = funicodeOrNone(c_namespaces[0])
                 nsmap[prefix] = funicode(c_namespaces[1])
                 c_namespaces += 2
@@ -331,12 +347,14 @@ cdef void _handleSaxTargetStart(
                                c_localname, element)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxStartNoNs(void* ctxt, const_xmlChar* c_name,
                               const_xmlChar** c_attributes) with gil:
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -348,17 +366,19 @@ cdef void _handleSaxStartNoNs(void* ctxt, const_xmlChar* c_name,
             _pushSaxStartEvent(context, c_ctxt, NULL, c_name, None)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxTargetStartNoNs(void* ctxt, const_xmlChar* c_name,
                                     const_xmlChar** c_attributes) with gil:
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
         if c_attributes is NULL:
-            attrib = EMPTY_READ_ONLY_DICT
+            attrib = IMMUTABLE_EMPTY_MAPPING
         else:
             attrib = {}
             while c_attributes[0] is not NULL:
@@ -367,12 +387,14 @@ cdef void _handleSaxTargetStartNoNs(void* ctxt, const_xmlChar* c_name,
                 c_attributes += 2
         element = _callTargetSaxStart(
             context, c_ctxt, funicode(c_name),
-            attrib, EMPTY_READ_ONLY_DICT)
+            attrib, IMMUTABLE_EMPTY_MAPPING)
         if context._event_filter & (PARSE_EVENT_FILTER_END |
                                     PARSE_EVENT_FILTER_START):
             _pushSaxStartEvent(context, c_ctxt, NULL, c_name, element)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef _callTargetSaxStart(_SaxParserContext context,
@@ -408,7 +430,7 @@ cdef void _handleSaxEnd(void* ctxt, const_xmlChar* c_localname,
                         const_xmlChar* c_prefix,
                         const_xmlChar* c_namespace) with gil:
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -422,11 +444,13 @@ cdef void _handleSaxEnd(void* ctxt, const_xmlChar* c_localname,
         _pushSaxNsEndEvents(context)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxEndNoNs(void* ctxt, const_xmlChar* c_name) with gil:
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -438,6 +462,8 @@ cdef void _handleSaxEndNoNs(void* ctxt, const_xmlChar* c_name) with gil:
         _pushSaxEndEvent(context, NULL, c_name, node)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef tuple NS_END_EVENT = ('end-ns', None)
@@ -474,6 +500,8 @@ cdef void _handleSaxData(void* ctxt, const_xmlChar* c_data, int data_len) with g
             c_data[:data_len].decode('utf8'))
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxTargetDoctype(void* ctxt, const_xmlChar* c_name,
@@ -481,6 +509,8 @@ cdef void _handleSaxTargetDoctype(void* ctxt, const_xmlChar* c_name,
                                   const_xmlChar* c_system) with gil:
     # can only be called if parsing with a target
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
+        return
     context = <_SaxParserContext>c_ctxt._private
     try:
         context._target._handleSaxDoctype(
@@ -489,28 +519,30 @@ cdef void _handleSaxTargetDoctype(void* ctxt, const_xmlChar* c_name,
             funicodeOrNone(c_system))
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxStartDocument(void* ctxt) with gil:
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
+        return
     context = <_SaxParserContext>c_ctxt._private
     context._origSaxStartDocument(ctxt)
     c_doc = c_ctxt.myDoc
-    if c_doc and c_ctxt.dict and not c_doc.dict:
-        # I have no idea why libxml2 disables this - we need it
-        c_ctxt.dictNames = 1
-        c_doc.dict = c_ctxt.dict
     try:
         context.startDocument(c_doc)
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxPI(void* ctxt, const_xmlChar* c_target,
                        const_xmlChar* c_data) with gil:
     # can only be called if parsing with a target
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -521,23 +553,33 @@ cdef void _handleSaxPI(void* ctxt, const_xmlChar* c_target,
             context.events_iterator._events.append(('pi', pi))
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxPIEvent(void* ctxt, const_xmlChar* target,
                             const_xmlChar* data) with gil:
     # can only be called when collecting pi events
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
+        return
     context = <_SaxParserContext>c_ctxt._private
     context._origSaxPI(ctxt, target, data)
     c_node = _findLastEventNode(c_ctxt)
-    if c_node is not NULL:
+    if c_node is NULL:
+        return
+    try:
         context.pushEvent('pi', c_node)
+    except:
+        context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxTargetComment(void* ctxt, const_xmlChar* c_data) with gil:
     # can only be called if parsing with a target
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
-    if c_ctxt._private is NULL:
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
         return
     context = <_SaxParserContext>c_ctxt._private
     try:
@@ -546,16 +588,26 @@ cdef void _handleSaxTargetComment(void* ctxt, const_xmlChar* c_data) with gil:
             context.events_iterator._events.append(('comment', comment))
     except:
         context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef void _handleSaxComment(void* ctxt, const_xmlChar* text) with gil:
     # can only be called when collecting comment events
     c_ctxt = <xmlparser.xmlParserCtxt*>ctxt
+    if c_ctxt._private is NULL or c_ctxt.disableSAX:
+        return
     context = <_SaxParserContext>c_ctxt._private
     context._origSaxComment(ctxt, text)
     c_node = _findLastEventNode(c_ctxt)
-    if c_node is not NULL:
+    if c_node is NULL:
+        return
+    try:
         context.pushEvent('comment', c_node)
+    except:
+        context._handleSaxException(c_ctxt)
+    finally:
+        return  # swallow any further exceptions
 
 
 cdef inline xmlNode* _findLastEventNode(xmlparser.xmlParserCtxt* c_ctxt):
@@ -690,7 +742,7 @@ cdef class TreeBuilder(_SaxParserTarget):
         Opens a new element.
         """
         if nsmap is None:
-            nsmap = EMPTY_READ_ONLY_DICT
+            nsmap = IMMUTABLE_EMPTY_MAPPING
         return self._handleSaxStart(tag, attrs, nsmap)
 
     def end(self, tag):

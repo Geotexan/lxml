@@ -31,6 +31,7 @@ ElementTree_.
      2.1  Which version of libxml2 and libxslt should I use or require?
      2.2  Where are the binary builds?
      2.3  Why do I get errors about missing UCS4 symbols when installing lxml?
+     2.4  My C compiler crashes on installation
    3  Contributing
      3.1  Why is lxml not written in Python?
      3.2  How can I contribute?
@@ -48,12 +49,12 @@ ElementTree_.
    6  Parsing and Serialisation
      6.1  Why doesn't the ``pretty_print`` option reformat my XML output?
      6.2  Why can't lxml parse my XML from unicode strings?
-     6.3  What is the difference between str(xslt(doc)) and xslt(doc).write() ?
-     6.4  Why can't I just delete parents or clear the root node in iterparse()?
-     6.5  How do I output null characters in XML text?
-     6.6  Is lxml vulnerable to XML bombs?
-     6.7  How do I configure lxml safely as a web-service endpoint?
-     6.8  Can lxml parse from file objects opened in unicode mode?
+     6.3  Can lxml parse from file objects opened in unicode mode?
+     6.4  What is the difference between str(xslt(doc)) and xslt(doc).write() ?
+     6.5  Why can't I just delete parents or clear the root node in iterparse()?
+     6.6  How do I output null characters in XML text?
+     6.7  Is lxml vulnerable to XML bombs?
+     6.8  How do I configure lxml safely as a web-service endpoint?
    7  XPath and Document Traversal
      7.1  What are the ``findall()`` and ``xpath()`` methods on Element(Tree)?
      7.2  Why doesn't ``findall()`` support full XPath expressions?
@@ -169,6 +170,12 @@ two ways, the best being the original ISO Schematron reference
 implementation via XSLT.  libxml2 also supports loading documents
 through HTTP and FTP.
 
+For `RelaxNG Compact Syntax <http://relaxng.org/compact-tutorial-20030326.html>`_
+support, there is a tool called `rnc2rng <http://www.gnosis.cx/download/relax/>`_,
+written by David Mertz, which you might be able to use from Python.  Failing
+that, `trang <http://code.google.com/p/jing-trang/>`_ is the 'official'
+command line tool (written in Java) to do the conversion.
+
 
 Who uses lxml?
 --------------
@@ -195,12 +202,16 @@ not take advantage of lxml's enhanced feature set.
   a secure HTTP proxy
 * `lwebstring <http://pypi.python.org/pypi/lwebstring>`_,
   an XML template engine
+* `openpyxl <https://openpyxl.readthedocs.io/>`_,
+  a library to read/write MS Excel 2007 files
 * `OpenXMLlib <http://permalink.gmane.org/gmane.comp.python.lxml.devel/3250>`_,
   a library for handling OpenXML document meta data
 * `PsychoPy <http://www.psychopy.org/>`_,
   psychology software in Python
 * `Pycoon <http://pypi.python.org/pypi/pycoon>`_,
   a WSGI web development framework based on XML pipelines
+* `pycsw <http://pycsw.org>`_,
+  an `OGC CSW <http://opengeospatial.org/standards/cat>`_ server implementation written in Python
 * `PyQuery <http://pypi.python.org/pypi/pyquery>`_,
   a query framework for XML/HTML, similar to jQuery for JavaScript
 * `python-docx <http://github.com/mikemaccana/python-docx>`_,
@@ -413,16 +424,23 @@ see when (or if) a specific bug has been fixed.
 Where are the binary builds?
 ----------------------------
 
-Binary builds are most often requested by users of Microsoft Windows.
-Two of the major design issues of this operating system make it
-non-trivial for its users to build lxml: the lack of a pre-installed
-standard compiler and the missing package management.
+Thanks to the help by Joar Wandborg, we try to make "manylinux_" binary
+builds for Linux available shortly after each source release, as they
+are very frequently used by continuous integration and/or build servers.
 
-For recent lxml releases, PyPI provides community donated Windows binaries.
+Thanks to the help by Maximilian Hils and the Appveyor build service,
+we also try to serve the frequent requests for binary builds available
+for Microsoft Windows in a timely fashion, since users of that platform
+usually fail to build lxml themselves.  Two of the major design issues
+of this operating system make this non-trivial for its users: the lack
+of a pre-installed standard compiler and the missing package management.
+
 Besides that, Christoph Gohlke generously provides `unofficial lxml binary
 builds for Windows <http://www.lfd.uci.edu/~gohlke/pythonlibs/#lxml>`_
 that are usually very up to date.  Consider using them if you prefer a
 binary build over a signed official source release.
+
+.. _manylinux: https://www.python.org/dev/peps/pep-0513
 
 
 Why do I get errors about missing UCS4 symbols when installing lxml?
@@ -439,6 +457,20 @@ This means that you have to compile lxml from sources for your system.  Note
 that you do not need Cython for this, the lxml source distribution is directly
 compilable on both platform types.  See the `build instructions`_ on how to do
 this.
+
+
+My C compiler crashes on installation
+-------------------------------------
+
+lxml consists of a relatively large amount of (Cython) generated C code
+in a single source module.  Compiling this module requires a lot of free
+memory, usually more than half a GB, which can pose problems especially on
+shared/cloud build systems.
+
+If your C compiler crashes while building lxml from sources, consider
+using one of the binary wheels that we provide.  The "manylinux_" binaries
+should generally work well on most build systems and install substantially
+faster than a source build.
 
 
 Contributing
@@ -467,7 +499,7 @@ is written entirely in Python.
 
 Please contact the `mailing list`_ if you need any help.
 
-.. _Cython: http://www.cython.org/
+.. _Cython: http://cython.org/
 .. _`code that Cython accepts`: http://docs.cython.org/docs/tutorial.html
 
 
@@ -475,9 +507,9 @@ How can I contribute?
 ---------------------
 
 If you find something that you would like lxml to do (or do better),
-then please tell us about it on the `mailing list`_.  Patches are
-always appreciated, especially when accompanied by unit tests and
-documentation (doctests would be great).  See the ``tests``
+then please tell us about it on the `mailing list`_.  Pull requests
+on github are always appreciated, especially when accompanied by unit
+tests and documentation (doctests would be great).  See the ``tests``
 subdirectories in the lxml source tree (below the ``src`` directory)
 and the ReST_ `text files`_ in the ``doc`` directory.
 
@@ -493,7 +525,7 @@ Besides enhancing the code, there are a lot of places where you can help the
 project and its user base.  You can
 
 * spread the word and write about lxml.  Many users (especially new Python
-  users) have not yet heared about lxml, although our user base is constantly
+  users) have not yet heard about lxml, although our user base is constantly
   growing.  If you write your own blog and feel like saying something about
   lxml, go ahead and do so.  If we think your contribution or criticism is
   valuable to other users, we may even put a link or a quote on the project
@@ -516,9 +548,9 @@ project and its user base.  You can
   top-ranked when searching the web for "Python and XML", so maybe you
   have an idea how to improve that.
 
-* help with the tutorial.  A tutorial is the most important stating point for
+* help with the tutorial.  A tutorial is the most important starting point for
   new users, so it is important for us to provide an easy to understand guide
-  into lxml.  As allo documentation, the tutorial is work in progress, so we
+  into lxml.  As all documentation, the tutorial is work in progress, so we
   appreciate every helping hand.
 
 * improve the docstrings.  lxml uses docstrings to support Python's integrated
@@ -856,13 +888,26 @@ lxml can add fresh whitespace to the XML tree to indent it.
 Note that the ``remove_blank_text`` option also uses a heuristic if it
 has no definite knowledge about the document's ignorable whitespace.
 It will keep blank text nodes that appear after non-blank text nodes
-at the same level.  This is to prevent document-style XML from
-breaking.
+at the same level.  This is to prevent document-style XML from losing
+content.
 
-If you want to be sure all blank text is removed, you have to use
-either a DTD to tell the parser which whitespace it can safely ignore,
-or remove the ignorable whitespace manually after parsing, e.g. by
-setting all tail text to None:
+The HTMLParser has this structural knowledge built-in, which means that
+most whitespace that appears between tags in HTML documents will *not*
+be removed by this option, except in places where it is truly ignorable,
+e.g. in the page header, between table structure tags, etc.  Therefore,
+it is also safe to use this option with the HTMLParser, as it will keep
+content like the following intact (i.e. it will not remove the space
+that separates the two words):
+
+.. sourcecode:: html
+
+   <p><b>some</b> <em>text</em></p>
+
+If you want to be sure all blank text is removed from an XML document
+(or just more blank text than the parser does by itself), you have to
+use either a DTD to tell the parser which whitespace it can safely
+ignore, or remove the ignorable whitespace manually after parsing,
+e.g. by setting all tail text to None:
 
 .. sourcecode:: python
 
@@ -913,6 +958,30 @@ broken.  lxml will not parse them.  You must provide parsable data in a
 valid encoding.
 
 .. _`XML specification`: http://www.w3.org/TR/REC-xml/
+
+
+Can lxml parse from file objects opened in unicode/text mode?
+-------------------------------------------------------------
+
+Technically, yes. However, you likely do not want to do that, because
+it is extremely inefficient. The text encoding that libxml2 uses
+internally is UTF-8, so parsing from a Unicode file means that Python
+first reads a chunk of data from the file, then decodes it into a new
+buffer, and then copies it into a new unicode string object, just to
+let libxml2 make yet another copy while encoding it down into UTF-8
+in order to parse it. It's clear that this involves a lot more
+recoding and copying than when parsing straight from the bytes that
+the file contains.
+
+If you really know the encoding better than the parser (e.g. when
+parsing HTML that lacks a content declaration), then instead of passing
+an encoding parameter into the file object when opening it, create a
+new instance of an XMLParser or HTMLParser and pass the encoding into
+its constructor.  Afterwards, use that parser for parsing, e.g. by
+passing it into the ``etree.parse(file, parser)`` function.  Remember
+to open the file in binary mode (mode="rb"), or, if possible, prefer
+passing the file path directly into ``parse()`` instead of an opened
+Python file object.
 
 
 What is the difference between str(xslt(doc)) and xslt(doc).write() ?
@@ -999,7 +1068,9 @@ Some of the most famous excessive content expansion attacks
 use XML entity references.  Luckily, entity expansion is mostly
 useless for the data commonly sent through web services and
 can simply be disabled, which rules out several types of
-denial of service attacks at once.  Consequently, version
+denial of service attacks at once.  This also involves an attack
+that reads local files from the server, as XML entities can be
+defined to expand into their content.   Consequently, version
 1.2 of the SOAP standard explicitly disallows entity references
 in the XML stream.
 
@@ -1040,27 +1111,6 @@ The defusedxml_ package comes with an example setup and a wrapper
 API for lxml that applies certain counter measures internally.
 
 .. _defusedxml: https://bitbucket.org/tiran/defusedxml
-
-
-Can lxml parse from file objects opened in unicode/text mode?
--------------------------------------------------------------
-
-Technically, yes. However, you likely do not want to do that, because
-it is extremely inefficient. The text encoding that libxml2 uses
-internally is UTF-8, so parsing from a Unicode file means that Python
-first reads a chunk of data from the file, then decodes it into a new
-buffer, and then copies it into a new unicode string object, just to
-let libxml2 make yet another copy while encoding it down into UTF-8
-in order to parse it. It's clear that this involves a lot more
-recoding and copying than when parsing straight from the bytes that
-the file contains.
-
-If you really know the encoding better than the parser (e.g. when
-parsing HTML that lacks a content declaration), then instead of passing
-an encoding parameter into the file object when opening it, create a
-new instance of an XMLParser or HTMLParser and pass the encoding into
-its constructor. Afterwards, use that parser for parsing, e.g. by
-passing it into the ``etree.parse(file, parser)`` function.
 
 
 XPath and Document Traversal

@@ -73,43 +73,45 @@ cdef xmlDoc* _xslt_resolve_from_python(const_xmlChar* c_uri, void* c_context,
     cdef _ResolverRegistry resolvers
     cdef _InputDocument doc_ref
     cdef xmlDoc* c_doc
+    cdef xmlDoc* c_return_doc = NULL
 
     error[0] = 0
     context = <_XSLTResolverContext>c_context
 
     # shortcut if we resolve the stylesheet itself
     c_doc = context._c_style_doc
-    if c_doc is not NULL and c_doc.URL is not NULL:
-        if tree.xmlStrcmp(c_uri, c_doc.URL) == 0:
-            return _copyDoc(c_doc, 1)
-
-    # delegate to the Python resolvers
     try:
+        if c_doc is not NULL and c_doc.URL is not NULL:
+            if tree.xmlStrcmp(c_uri, c_doc.URL) == 0:
+                c_return_doc = _copyDoc(c_doc, 1)
+                return c_return_doc  # 'goto', see 'finally' below
+
+        # delegate to the Python resolvers
         resolvers = context._resolvers
         if tree.xmlStrncmp(<unsigned char*>'string://__STRING__XSLT__/', c_uri, 26) == 0:
             c_uri += 26
         uri = _decodeFilename(c_uri)
         doc_ref = resolvers.resolve(uri, None, context)
 
-        c_doc = NULL
         if doc_ref is not None:
             if doc_ref._type == PARSER_DATA_STRING:
-                c_doc = _parseDoc(
+                c_return_doc = _parseDoc(
                     doc_ref._data_bytes, doc_ref._filename, context._parser)
             elif doc_ref._type == PARSER_DATA_FILENAME:
-                c_doc = _parseDocFromFile(doc_ref._filename, context._parser)
+                c_return_doc = _parseDocFromFile(
+                    doc_ref._filename, context._parser)
             elif doc_ref._type == PARSER_DATA_FILE:
-                c_doc = _parseDocFromFilelike(
+                c_return_doc = _parseDocFromFilelike(
                     doc_ref._file, doc_ref._filename, context._parser)
             elif doc_ref._type == PARSER_DATA_EMPTY:
-                c_doc = _newXMLDoc()
-            if c_doc is not NULL and c_doc.URL is NULL:
-                c_doc.URL = tree.xmlStrdup(c_uri)
-        return c_doc
+                c_return_doc = _newXMLDoc()
+            if c_return_doc is not NULL and c_return_doc.URL is NULL:
+                c_return_doc.URL = tree.xmlStrdup(c_uri)
     except:
-        context._store_raised()
         error[0] = 1
-        return NULL
+        context._store_raised()
+    finally:
+        return c_return_doc  # and swallow any further exceptions
 
 cdef void _xslt_store_resolver_exception(const_xmlChar* c_uri, void* context,
                                          xslt.xsltLoadType c_type) with gil:
@@ -120,7 +122,7 @@ cdef void _xslt_store_resolver_exception(const_xmlChar* c_uri, void* context,
         else:
             exception = XSLTParseError(message)
         (<_XSLTResolverContext>context)._store_exception(exception)
-    except Exception, e:
+    except BaseException as e:
         (<_XSLTResolverContext>context)._store_exception(e)
 
 cdef xmlDoc* _xslt_doc_loader(const_xmlChar* c_uri, tree.xmlDict* c_dict,
@@ -318,6 +320,7 @@ cdef class _XSLTContext(_BaseContext):
 
 @cython.final
 @cython.internal
+@cython.freelist(8)
 cdef class _XSLTQuotedStringParam:
     u"""A wrapper class for literal XSLT string parameters that require
     quote escaping.
@@ -327,6 +330,7 @@ cdef class _XSLTQuotedStringParam:
         self.strval = _utf8(strval)
 
 
+@cython.no_gc_clear
 cdef class XSLT:
     u"""XSLT(self, xslt_input, extensions=None, regexp=True, access_control=None)
 
@@ -334,8 +338,8 @@ cdef class XSLT:
 
     Calling this object on a tree or Element will execute the XSLT::
 
-      >>> transform = etree.XSLT(xsl_tree)
-      >>> result = transform(xml_tree)
+        transform = etree.XSLT(xsl_tree)
+        result = transform(xml_tree)
 
     Keyword arguments of the constructor:
 
@@ -550,7 +554,7 @@ cdef class XSLT:
                 c_doc, params, context, transform_ctxt)
             if params is not NULL:
                 # deallocate space for parameters
-                python.PyMem_Free(params)
+                python.lxml_free(params)
 
             if transform_ctxt.state != xslt.XSLT_STATE_OK:
                 if c_result is not NULL:
@@ -644,8 +648,9 @@ cdef _convert_xslt_parameters(xslt.xsltTransformContext* transform_ctxt,
     # allocate space for parameters
     # * 2 as we want an entry for both key and value,
     # and + 1 as array is NULL terminated
-    params = <const_char**>python.PyMem_Malloc(
-        sizeof(const_char*) * (parameter_count * 2 + 1))
+    params = <const_char**>python.lxml_malloc(parameter_count * 2 + 1, sizeof(const_char*))
+    if not params:
+        raise MemoryError()
     try:
         i = 0
         for key, value in parameters.iteritems():
@@ -664,7 +669,7 @@ cdef _convert_xslt_parameters(xslt.xsltTransformContext* transform_ctxt,
                 params[i] = <const_char*>tree.xmlDictLookup(c_dict, _xcstr(v), len(v))
                 i += 1
     except:
-        python.PyMem_Free(params)
+        python.lxml_free(params)
         raise
     params[i] = NULL
     params_ptr[0] = params
@@ -723,12 +728,12 @@ cdef class _XSLTResultTree(_ElementTree):
     def __str__(self):
         cdef xmlChar* s = NULL
         cdef int l = 0
-        if python.IS_PYTHON3:
+        if not python.IS_PYTHON2:
             return self.__unicode__()
         self._saveToStringAndSize(&s, &l)
         if s is NULL:
             return ''
-        # we must not use 'funicode' here as this is not always UTF-8
+        # we must not use 'funicode()' here as this is not always UTF-8
         try:
             result = <bytes>s[:l]
         finally:

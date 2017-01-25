@@ -5,8 +5,6 @@ ToDo's for lxml
 lxml
 ====
 
-* create all iterparse events only on start events and store the end events in the stack
-
 In general
 ----------
 
@@ -32,6 +30,10 @@ In general
 
 * add 'nsmap' parameter to cleanup_namespaces()
 
+* fix tail text handling in addnext()/addprevious()
+
+* make Element nsmap editable to allow defining new namespaces (LP#555602)
+
 
 Entities
 --------
@@ -44,3 +46,13 @@ Objectify
 
 * emulate setting special __attributes__ on ObjectifiedElement's as Python
   attributes, not XML children
+
+
+Incremental parsing
+-------------------
+
+* create all iterparse events only on start events and
+  store the end events in the stack
+
+* rewrite SAX event creation in a more C-ish way to avoid having to
+  acquire the GIL on each event

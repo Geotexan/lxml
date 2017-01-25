@@ -33,6 +33,13 @@ The usual setup procedure:
 
   >>> from lxml import etree
 
+The following examples also use StringIO or BytesIO to show how to parse
+from files and file-like objects.  Both are available in the ``io`` module:
+
+.. sourcecode:: python
+
+  from io import StringIO, BytesIO
+
 ..
   >>> from lxml import usedoctest
 
@@ -163,6 +170,10 @@ Available boolean keyword arguments:
 
 * compact - use compact storage for short text content (on by default)
 
+* collect_ids - collect XML IDs in a hash table while parsing (on by default).
+  Disabling this can substantially speed up parsing of documents with many
+  different IDs if the hash lookup is not used afterwards.
+
 Other keyword arguments:
 
 * encoding - override the document encoding
@@ -185,10 +196,10 @@ warnings of the last parser run:
   >>> print(len(parser.error_log))
   0
 
-  >>> tree = etree.XML("<root>\n</b>", parser)
+  >>> tree = etree.XML("<root>\n</b>", parser)  # doctest: +ELLIPSIS
   Traceback (most recent call last):
     ...
-  lxml.etree.XMLSyntaxError: Opening and ending tag mismatch: root line 1 and b, line 2, column 5
+  lxml.etree.XMLSyntaxError: Opening and ending tag mismatch: root line 1 and b, line 2, column 5...
 
   >>> print(len(parser.error_log))
   1
@@ -294,7 +305,7 @@ Doctype information
 The use of the libxml2 parsers makes some additional information available at
 the API level.  Currently, ElementTree objects can access the DOCTYPE
 information provided by a parsed document, as well as the XML version and the
-original encoding:
+original encoding.  Since lxml 3.5, the doctype references are mutable.
 
 .. sourcecode:: pycon
 
@@ -317,6 +328,12 @@ original encoding:
   1.0
   >>> print(docinfo.encoding)
   ascii
+
+  >>> docinfo.system_url = None
+  >>> docinfo.public_id = None
+  >>> print(etree.tostring(tree))
+  <!DOCTYPE html>
+  <html><body/></html>
 
 
 The target parser interface
@@ -517,7 +534,7 @@ iterating over the result.  This is most useful for non-blocking execution
 environments where data chunks arrive one after the other and should be
 processed as far as possible in each step.
 
-The basic usage is as follows:
+The same feature is available in lxml 3.3.  The basic usage is as follows:
 
 .. sourcecode:: pycon
 
@@ -920,6 +937,8 @@ And now we can take the resulting in-memory tree and iterate over it
 using ``iterwalk()`` to get the exact same events without parsing the
 input again:
 
+.. sourcecode:: pycon
+
   >>> context = etree.iterwalk(
   ...             root, events=("start", "end"), tag="element")
 
@@ -976,32 +995,32 @@ number of other byte encodings if asked for:
   >>> etree.tostring(root, encoding='UTF-8', xml_declaration=False)
   b'<test> \xef\xa3\x91 + \xef\xa3\x92 </test>'
 
-As an extension, lxml.etree recognises the unicode type as an argument to the
-encoding parameter to build a Python unicode representation of a tree:
+As an extension, lxml.etree recognises the name 'unicode' as an argument
+to the encoding parameter to build a Python unicode representation of a tree:
 
 .. sourcecode:: pycon
 
-  >>> etree.tostring(root, encoding=unicode)
+  >>> etree.tostring(root, encoding='unicode')
   u'<test> \uf8d1 + \uf8d2 </test>'
 
   >>> el = etree.Element("test")
-  >>> etree.tostring(el, encoding=unicode)
+  >>> etree.tostring(el, encoding='unicode')
   u'<test/>'
 
   >>> subel = etree.SubElement(el, "subtest")
-  >>> etree.tostring(el, encoding=unicode)
+  >>> etree.tostring(el, encoding='unicode')
   u'<test><subtest/></test>'
 
   >>> tree = etree.ElementTree(el)
-  >>> etree.tostring(tree, encoding=unicode)
+  >>> etree.tostring(tree, encoding='unicode')
   u'<test><subtest/></test>'
 
-The result of ``tostring(encoding=unicode)`` can be treated like any
+The result of ``tostring(encoding='unicode')`` can be treated like any
 other Python unicode string and then passed back into the parsers.
 However, if you want to save the result to a file or pass it over the
 network, you should use ``write()`` or ``tostring()`` with a byte
 encoding (typically UTF-8) to serialize the XML.  The main reason is
-that unicode strings returned by ``tostring(encoding=unicode)`` are
+that unicode strings returned by ``tostring(encoding='unicode')`` are
 not byte streams and they never have an XML declaration to specify
 their encoding.  These strings are most likely not parsable by other
 XML libraries.

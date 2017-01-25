@@ -5,6 +5,7 @@ syntax: glob
 __pycache__
 
 src/lxml/includes/lxml-version.h
+src/lxml/*.html
 src/lxml/lxml.etree.c
 src/lxml/lxml.etree.h
 src/lxml/lxml.etree_api.h
@@ -12,6 +13,7 @@ src/lxml/lxml.objectify.c
 
 build/
 dist/
+wheelhouse/
 doc/html/
 cython_debug/
 .idea/
@@ -19,6 +21,7 @@ cython_debug/
 .gitrev
 .coverage
 funding.txt
+MANIFEST
 .tox
 *.orig
 *.rej
@@ -29,3 +32,4 @@ funding.txt
 *.o
 *.pyd
 *~
+*.egg-info

@@ -3,6 +3,7 @@
 .idea
 build
 dist
+wheelhouse
 doc/html
 libs
 *.egg-info
@@ -10,8 +11,10 @@ libs
 *.so
 *.o
 *.pyd
+MANIFEST
 
 src/lxml/includes/lxml-version.h
+src/lxml/*.html
 src/lxml/lxml.etree.c
 src/lxml/lxml.etree.h
 src/lxml/lxml.etree_api.h

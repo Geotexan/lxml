@@ -13,6 +13,7 @@ if this_dir not in sys.path:
 from common_imports import etree, BytesIO, HelperTestCase, fileInTestDir
 from common_imports import doctest, make_doctest
 
+
 class ETreeXMLSchemaTestCase(HelperTestCase):
     def test_xmlschema(self):
         tree_valid = self.parse('<a><b></b></a>')
@@ -29,7 +30,39 @@ class ETreeXMLSchemaTestCase(HelperTestCase):
 ''')
         schema = etree.XMLSchema(schema)
         self.assertTrue(schema.validate(tree_valid))
-        self.assertTrue(not schema.validate(tree_invalid))
+        self.assertFalse(schema.validate(tree_invalid))
+        self.assertTrue(schema.validate(tree_valid))     # retry valid
+        self.assertFalse(schema.validate(tree_invalid))  # retry invalid
+
+    def test_xmlschema_error_log(self):
+        tree_valid = self.parse('<a><b></b></a>')
+        tree_invalid = self.parse('<a><c></c></a>')
+        schema = self.parse('''
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <xsd:element name="a" type="AType"/>
+  <xsd:complexType name="AType">
+    <xsd:sequence>
+      <xsd:element name="b" type="xsd:string" />
+    </xsd:sequence>
+  </xsd:complexType>
+</xsd:schema>
+''')
+        schema = etree.XMLSchema(schema)
+        self.assertTrue(schema.validate(tree_valid))
+        self.assertFalse(schema.error_log.filter_from_errors())
+
+        self.assertFalse(schema.validate(tree_invalid))
+        self.assertTrue(schema.error_log.filter_from_errors())
+        self.assertTrue(schema.error_log.filter_types(
+            etree.ErrorTypes.SCHEMAV_ELEMENT_CONTENT))
+
+        self.assertTrue(schema.validate(tree_valid))
+        self.assertFalse(schema.error_log.filter_from_errors())
+
+        self.assertFalse(schema.validate(tree_invalid))
+        self.assertTrue(schema.error_log.filter_from_errors())
+        self.assertTrue(schema.error_log.filter_types(
+            etree.ErrorTypes.SCHEMAV_ELEMENT_CONTENT))
 
     def test_xmlschema_default_attributes(self):
         schema = self.parse('''
@@ -218,6 +251,25 @@ class ETreeXMLSchemaTestCase(HelperTestCase):
     def test_xmlschema_elementtree_error(self):
         self.assertRaises(ValueError, etree.XMLSchema, etree.ElementTree())
 
+    def test_xmlschema_comment_error(self):
+        self.assertRaises(ValueError, etree.XMLSchema, etree.Comment('TEST'))
+
+    def test_xmlschema_illegal_validation_error(self):
+        schema = self.parse('''
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <xsd:element name="a" type="xsd:string"/>
+</xsd:schema>
+''')
+        schema = etree.XMLSchema(schema)
+
+        root = etree.Element('a')
+        root.text = 'TEST'
+        self.assertTrue(schema(root))
+
+        self.assertRaises(ValueError, schema, etree.Comment('TEST'))
+        self.assertRaises(ValueError, schema, etree.PI('a', 'text'))
+        self.assertRaises(ValueError, schema, etree.Entity('text'))
+
     def test_xmlschema_invalid_schema1(self):
         schema = self.parse('''\
 <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -270,7 +322,27 @@ class ETreeXMLSchemaTestCase(HelperTestCase):
 </xsd:schema>
 ''')
         self.assertTrue(tree_valid.xmlschema(schema))
-        self.assertTrue(not tree_invalid.xmlschema(schema))
+        self.assertFalse(tree_invalid.xmlschema(schema))
+
+    def test_create_from_partial_doc(self):
+        # this used to crash because the schema part was not properly copied out
+        wsdl = self.parse('''\
+<wsdl:definitions
+   xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+   xmlns:xs="http://www.w3.org/2001/XMLSchema">
+ <wsdl:types>
+  <xs:schema>
+  </xs:schema>
+ </wsdl:types>
+</wsdl:definitions>
+        ''')
+        schema_element = wsdl.find(
+            "{http://schemas.xmlsoap.org/wsdl/}types/"
+            "{http://www.w3.org/2001/XMLSchema}schema"
+        )
+        etree.XMLSchema(schema_element)
+        etree.XMLSchema(schema_element)
+        etree.XMLSchema(schema_element)
 
 
 class ETreeXMLSchemaResolversTestCase(HelperTestCase):
@@ -376,6 +448,7 @@ class ETreeXMLSchemaResolversTestCase(HelperTestCase):
         schema_doc = etree.parse(self.resolver_schema_int, parser = parser)
         schema = etree.XMLSchema(schema_doc)
 
+
 def test_suite():
     suite = unittest.TestSuite()
     suite.addTests([unittest.makeSuite(ETreeXMLSchemaTestCase)])
@@ -383,6 +456,7 @@ def test_suite():
     suite.addTests(
         [make_doctest('../../../doc/validation.txt')])
     return suite
+
 
 if __name__ == '__main__':
     print('to test use test.py %s' % __file__)

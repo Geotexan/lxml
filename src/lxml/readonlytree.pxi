@@ -14,10 +14,11 @@ cdef class _ReadOnlyProxy:
     cdef int _assertNode(self) except -1:
         u"""This is our way of saying: this proxy is invalid!
         """
-        assert self._c_node is not NULL, u"Proxy invalidated!"
+        if not self._c_node:
+            raise ReferenceError("Proxy invalidated!")
         return 0
 
-    cdef int _raise_unsupported_type(self):
+    cdef int _raise_unsupported_type(self) except -1:
         raise TypeError("Unsupported node type: %d" % self._c_node.type)
 
     cdef void free_after_use(self):
@@ -84,17 +85,17 @@ cdef class _ReadOnlyProxy:
     def __repr__(self):
         self._assertNode()
         if self._c_node.type == tree.XML_ELEMENT_NODE:
-            return u"<Element %s at 0x%x>" % (self.tag, id(self))
+            return "<Element %s at 0x%x>" % (strrepr(self.tag), id(self))
         elif self._c_node.type == tree.XML_COMMENT_NODE:
-            return u"<!--%s-->" % self.text
+            return "<!--%s-->" % strrepr(self.text)
         elif self._c_node.type == tree.XML_ENTITY_NODE:
-            return u"&%s;" % funicode(self._c_node.name)
+            return "&%s;" % strrepr(funicode(self._c_node.name))
         elif self._c_node.type == tree.XML_PI_NODE:
             text = self.text
             if text:
-                return u"<?%s %s?>" % (self.target, text)
+                return "<?%s %s?>" % (strrepr(self.target), text)
             else:
-                return u"<?%s?>" % self.target
+                return "<?%s?>" % strrepr(self.target)
         else:
             self._raise_unsupported_type()
 
@@ -364,7 +365,7 @@ cdef _freeReadOnlyProxies(_ReadOnlyProxy sourceProxy):
 cdef class _OpaqueNodeWrapper:
     cdef tree.xmlNode* _c_node
     def __init__(self):
-        raise TypeError, u"This type cannot be instatiated from Python"
+        raise TypeError, u"This type cannot be instantiated from Python"
 
 @cython.final
 @cython.internal

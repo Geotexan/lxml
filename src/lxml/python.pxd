@@ -2,9 +2,11 @@ from libc cimport stdio
 from libc.string cimport const_char
 cimport cython
 
+cdef extern from *:
+    cdef bint PEP393_ENABLED "CYTHON_PEP393_ENABLED"
+
 cdef extern from "Python.h":
     ctypedef struct PyObject
-    ctypedef struct PyThreadState
     cdef int PY_SSIZE_T_MAX
     cdef int PY_VERSION_HEX
 
@@ -13,6 +15,12 @@ cdef extern from "Python.h":
     cdef void Py_XDECREF(PyObject* o)
 
     cdef stdio.FILE* PyFile_AsFile(object p)
+
+    # PEP 393
+    cdef bint PyUnicode_IS_READY(object u)
+    cdef Py_ssize_t PyUnicode_GET_LENGTH(object u)
+    cdef int PyUnicode_KIND(object u)
+    cdef void* PyUnicode_DATA(object u)
 
     cdef bytes PyUnicode_AsEncodedString(object u, char* encoding,
                                          char* errors)
@@ -45,15 +53,10 @@ cdef extern from "Python.h":
     cdef object PyList_AsTuple(object l)
     cdef void PyList_Clear(object l)
 
-#    cdef int PyDict_SetItemString(object d, char* key, object value) except -1
-#    cdef int PyDict_SetItem(object d, object key, object value) except -1
     cdef PyObject* PyDict_GetItemString(object d, char* key)
     cdef PyObject* PyDict_GetItem(object d, object key)
-#    cdef int PyDict_DelItem(object d, object key) except -1
     cdef void PyDict_Clear(object d)
-#    cdef object PyDict_Copy(object d)
     cdef object PyDictProxy_New(object d)
-    # cdef int PyDict_Contains(object d, object key) except -1 # Python 2.4+
     cdef Py_ssize_t PyDict_Size(object d)
     cdef object PySequence_List(object o)
     cdef object PySequence_Tuple(object o)
@@ -72,7 +75,7 @@ cdef extern from "Python.h":
     cdef object PyObject_RichCompare(object o1, object o2, int op)
     cdef int PyObject_RichCompareBool(object o1, object o2, int op)
 
-    PyObject* PyWeakref_NewRef(object ob, PyObject* callback) # used for PyPy only
+    PyObject* PyWeakref_NewRef(object ob, PyObject* callback) except NULL  # used for PyPy only
     object PyWeakref_LockObject(PyObject* ob) # PyPy only
 
     cdef void* PyMem_Malloc(size_t size)
@@ -82,8 +85,6 @@ cdef extern from "Python.h":
     # always returns NULL to pass on the exception
     cdef object PyErr_SetFromErrno(object type)
 
-    cdef PyThreadState* PyEval_SaveThread()
-    cdef void PyEval_RestoreThread(PyThreadState* state)
     cdef PyObject* PyThreadState_GetDict()
 
     # some handy functions
@@ -115,9 +116,16 @@ cdef extern from "pythread.h":
         NOWAIT_LOCK
 
 cdef extern from "etree_defs.h": # redefines some functions as macros
+    cdef void* lxml_malloc(size_t count, size_t item_size)
+    cdef void* lxml_realloc(void* mem, size_t count, size_t item_size)
+    cdef void lxml_free(void* mem)
     cdef bint _isString(object obj)
     cdef const_char* _fqtypename(object t)
     cdef object PY_NEW(object t)
     cdef bint LXML_UNICODE_STRINGS
-    cdef bint IS_PYTHON3
+    cdef bint IS_PYTHON2
+    cdef bint IS_PYTHON3  # legacy, avoid
     cdef bint IS_PYPY
+
+cdef extern from "lxml_endian.h":
+    cdef bint PY_BIG_ENDIAN  # defined in later Py3.x versions

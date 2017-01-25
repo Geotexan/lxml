@@ -9,13 +9,13 @@ for IO related test cases.
 """
 
 import unittest
-import os, re, tempfile, copy, operator, gc, sys
+import os, re, tempfile, copy, operator, sys
 
 this_dir = os.path.dirname(__file__)
 if this_dir not in sys.path:
     sys.path.insert(0, this_dir) # needed for Py3
 
-from common_imports import StringIO, BytesIO, etree
+from common_imports import BytesIO, etree
 from common_imports import ElementTree, cElementTree, ET_VERSION, CET_VERSION
 from common_imports import filter_by_version, fileInTestDir, canonicalize, HelperTestCase
 from common_imports import _str, _bytes, unicode, next
@@ -607,6 +607,16 @@ class _ETreeTestCaseBase(HelperTestCase):
         root.set("attr", "TEST")
         self.assertEqual("TEST", root.get("attr"))
 
+    def test_attrib_as_attrib(self):
+        Element = self.etree.Element
+
+        root = Element("root")
+        root.set("attr", "TEST")
+        self.assertEqual("TEST", root.attrib["attr"])
+
+        root2 = Element("root2", root.attrib)
+        self.assertEqual("TEST", root2.attrib["attr"])
+
     def test_attribute_iterator(self):
         XML = self.etree.XML
         
@@ -883,9 +893,24 @@ class _ETreeTestCaseBase(HelperTestCase):
     def test_element_with_attributes(self):
         Element = self.etree.Element
         
-        el = Element('tag', {'foo':'Foo', 'bar':'Bar'})
+        el = Element('tag', {'foo': 'Foo', 'bar': 'Bar'})
         self.assertEqual('Foo', el.attrib['foo'])
         self.assertEqual('Bar', el.attrib['bar'])
+
+    def test_element_with_attributes_extra(self):
+        Element = self.etree.Element
+
+        el = Element('tag', {'foo': 'Foo', 'bar': 'Bar'}, baz='Baz')
+        self.assertEqual('Foo', el.attrib['foo'])
+        self.assertEqual('Bar', el.attrib['bar'])
+        self.assertEqual('Baz', el.attrib['baz'])
+
+    def test_element_with_attributes_extra_duplicate(self):
+        Element = self.etree.Element
+
+        el = Element('tag', {'foo': 'Foo', 'bar': 'Bar'}, bar='Baz')
+        self.assertEqual('Foo', el.attrib['foo'])
+        self.assertEqual('Baz', el.attrib['bar'])
 
     def test_element_with_attributes_ns(self):
         Element = self.etree.Element
@@ -2295,13 +2320,32 @@ class _ETreeTestCaseBase(HelperTestCase):
         s = [e, f]
         a[99:] = s
         self.assertEqual(
-            [a, b, e, f],
+            [b, c, e, f],
             list(a))
 
         s = [g, h]
         a[:0] = s
         self.assertEqual(
-            [g, h, a, b, e, f],
+            [g, h, b, c, e, f],
+            list(a))
+
+    def test_setslice_end_exact(self):
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+
+        a = Element('a')
+        b = SubElement(a, 'b')
+        c = SubElement(a, 'c')
+        d = SubElement(a, 'd')
+
+        e = Element('e')
+        f = Element('f')
+        g = Element('g')
+
+        s = [e, f, g]
+        a[3:] = s
+        self.assertEqual(
+            [b, c, d, e, f, g],
             list(a))
 
     def test_setslice_single(self):
@@ -2378,25 +2422,6 @@ class _ETreeTestCaseBase(HelperTestCase):
             [b, x, y, c, d],
             list(a))
 
-    def test_setslice_end(self):
-        Element = self.etree.Element
-        SubElement = self.etree.SubElement
-
-        a = Element('a')
-        b = SubElement(a, 'b')
-        c = SubElement(a, 'c')
-        d = SubElement(a, 'd')
-
-        e = Element('e')
-        f = Element('f')
-        g = Element('g')
-
-        s = [e, f, g]
-        a[3:] = s
-        self.assertEqual(
-            [b, c, d, e, f, g],
-            list(a))
-        
     def test_setslice_empty(self):
         Element = self.etree.Element
 
@@ -4093,8 +4118,11 @@ if ElementTree:
         ElementTreeTestCase,
         ElementTreeTestCase.required_versions_ET, ET_VERSION)
 
-    class ElementTreePullTestCase(_XMLPullParserTest):
-        etree = ElementTree
+    if hasattr(ElementTree, 'XMLPullParser'):
+        class ElementTreePullTestCase(_XMLPullParserTest):
+            etree = ElementTree
+    else:
+        ElementTreePullTestCase = None
 
 
 if cElementTree:
@@ -4113,7 +4141,7 @@ def test_suite():
         suite.addTests([unittest.makeSuite(ETreePullTestCase)])
     if ElementTree:
         suite.addTests([unittest.makeSuite(ElementTreeTestCase)])
-        if hasattr(ElementTree, 'XMLPullParser'):
+        if ElementTreePullTestCase:
             suite.addTests([unittest.makeSuite(ElementTreePullTestCase)])
     if cElementTree:
         suite.addTests([unittest.makeSuite(CElementTreeTestCase)])

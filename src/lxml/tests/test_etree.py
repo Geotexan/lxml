@@ -7,6 +7,8 @@ Tests that apply to the general ElementTree API should go into
 test_elementtree
 """
 
+from __future__ import absolute_import
+
 import os.path
 import unittest
 import copy
@@ -15,16 +17,15 @@ import re
 import gc
 import operator
 import tempfile
+import textwrap
 import zlib
 import gzip
+from contextlib import closing, contextmanager
 
-this_dir = os.path.dirname(__file__)
-if this_dir not in sys.path:
-    sys.path.insert(0, this_dir) # needed for Py3
-
-from common_imports import etree, StringIO, BytesIO, HelperTestCase, fileInTestDir, read_file
-from common_imports import SillyFileLike, LargeFileLikeUnicode, doctest, make_doctest
-from common_imports import canonicalize, sorted, _str, _bytes
+from .common_imports import etree, StringIO, BytesIO, HelperTestCase
+from .common_imports import fileInTestDir, fileUrlInTestDir, read_file, path2url
+from .common_imports import SillyFileLike, LargeFileLikeUnicode, doctest, make_doctest
+from .common_imports import canonicalize, sorted, _str, _bytes
 
 print("")
 print("TESTED VERSION: %s" % etree.__version__)
@@ -41,6 +42,17 @@ try:
 except NameError:
     # Python 3
     _unicode = str
+
+
+@contextmanager
+def tmpfile():
+    handle, filename = tempfile.mkstemp()
+    try:
+        yield filename
+    finally:
+        os.close(handle)
+        os.remove(filename)
+
 
 class ETreeOnlyTestCase(HelperTestCase):
     """Tests only for etree, not ElementTree"""
@@ -65,6 +77,14 @@ class ETreeOnlyTestCase(HelperTestCase):
         else:
             # older C-API mechanism
             self.assertTrue(hasattr(self.etree, '_import_c_api'))
+
+    def test_include_paths(self):
+        import lxml
+        includes = lxml.get_include()
+        self.assertTrue(includes)
+        self.assertTrue(len(includes) >= 2)
+        self.assertTrue(os.path.join(os.path.dirname(lxml.__file__), 'includes') in includes,
+                        includes)
 
     def test_element_names(self):
         Element = self.etree.Element
@@ -230,13 +250,60 @@ class ETreeOnlyTestCase(HelperTestCase):
         root.set("attr", "TEST")
         self.assertEqual("TEST", root.get("attr"))
 
-    def test_attribute_set_invalid(self):
+    def test_attribute_set_nonstring(self):
         # ElementTree accepts arbitrary attribute values
         # lxml.etree allows only strings
         Element = self.etree.Element
+
+        root = Element("root")
+        root.set("attr", "TEST")
+        self.assertEqual("TEST", root.get("attr"))
+        self.assertRaises(TypeError, root.set, "newattr", 5)
+
+    def test_attrib_and_keywords(self):
+        Element = self.etree.Element
+
+        root = Element("root")
+        root.set("attr", "TEST")
+        self.assertEqual("TEST", root.attrib["attr"])
+
+        root2 = Element("root2", root.attrib, attr2='TOAST')
+        self.assertEqual("TEST", root2.attrib["attr"])
+        self.assertEqual("TOAST", root2.attrib["attr2"])
+        self.assertEqual(None, root.attrib.get("attr2"))
+
+    def test_attrib_order(self):
+        Element = self.etree.Element
+
+        keys = ["attr%d" % i for i in range(10)]
+        values = ["TEST-%d" % i for i in range(10)]
+        items = list(zip(keys, values))
+
+        root = Element("root")
+        for key, value in items:
+            root.set(key, value)
+        self.assertEqual(keys, root.attrib.keys())
+        self.assertEqual(values, root.attrib.values())
+
+        root2 = Element("root2", root.attrib,
+                        attr_99='TOAST-1', attr_98='TOAST-2')
+        self.assertEqual(['attr_98', 'attr_99'] + keys,
+                         root2.attrib.keys())
+        self.assertEqual(['TOAST-2', 'TOAST-1'] + values,
+                         root2.attrib.values())
+
+        self.assertEqual(keys, root.attrib.keys())
+        self.assertEqual(values, root.attrib.values())
+
+    def test_attribute_set_invalid(self):
+        # ElementTree accepts arbitrary attribute values
+        # lxml.etree allows only strings, or None for (html5) boolean attributes
+        Element = self.etree.Element
         root = Element("root")
         self.assertRaises(TypeError, root.set, "newattr", 5)
+        self.assertRaises(TypeError, root.set, "newattr", object)
         self.assertRaises(TypeError, root.set, "newattr", None)
+        self.assertRaises(TypeError, root.set, "newattr")
 
     def test_strip_attributes(self):
         XML = self.etree.XML
@@ -529,15 +596,16 @@ class ETreeOnlyTestCase(HelperTestCase):
         self.assertEqual(_bytes("<test/>"),
                           tostring(root2))
 
-    def test_attribute_set(self):
-        # ElementTree accepts arbitrary attribute values
-        # lxml.etree allows only strings
-        Element = self.etree.Element
+    def test_deepcopy_pi_dtd(self):
+        XML = self.etree.XML
+        tostring = self.etree.tostring
+        xml = _bytes('<!-- comment --><!DOCTYPE test [\n<!ENTITY entity "tasty">\n]>\n<test/>')
+        root = XML(xml)
+        tree1 = self.etree.ElementTree(root)
+        self.assertEqual(xml, tostring(tree1))
 
-        root = Element("root")
-        root.set("attr", "TEST")
-        self.assertEqual("TEST", root.get("attr"))
-        self.assertRaises(TypeError, root.set, "newattr", 5)
+        tree2 = copy.deepcopy(tree1)
+        self.assertEqual(xml, tostring(tree2))
 
     def test_parse_remove_comments(self):
         fromstring = self.etree.fromstring
@@ -652,6 +720,40 @@ class ETreeOnlyTestCase(HelperTestCase):
         f = BytesIO('<a><b><c/></a>')
         # ET raises ExpatError, lxml raises XMLSyntaxError
         self.assertRaises(self.etree.XMLSyntaxError, list, iterparse(f))
+
+    def test_iterparse_broken_recover(self):
+        iterparse = self.etree.iterparse
+        f = BytesIO('<a><b><c/></a>')
+        it = iterparse(f, events=('start', 'end'), recover=True)
+        events = [(ev, el.tag) for ev, el in it]
+        root = it.root
+        self.assertTrue(root is not None)
+
+        self.assertEqual(1, events.count(('start', 'a')))
+        self.assertEqual(1, events.count(('end', 'a')))
+
+        self.assertEqual(1, events.count(('start', 'b')))
+        self.assertEqual(1, events.count(('end', 'b')))
+
+        self.assertEqual(1, events.count(('start', 'c')))
+        self.assertEqual(1, events.count(('end', 'c')))
+
+    def test_iterparse_broken_multi_recover(self):
+        iterparse = self.etree.iterparse
+        f = BytesIO('<a><b><c/></d><b><c/></a></b>')
+        it = iterparse(f, events=('start', 'end'), recover=True)
+        events = [(ev, el.tag) for ev, el in it]
+        root = it.root
+        self.assertTrue(root is not None)
+
+        self.assertEqual(1, events.count(('start', 'a')))
+        self.assertEqual(1, events.count(('end', 'a')))
+
+        self.assertEqual(2, events.count(('start', 'b')))
+        self.assertEqual(2, events.count(('end', 'b')))
+
+        self.assertEqual(2, events.count(('start', 'c')))
+        self.assertEqual(2, events.count(('end', 'c')))
 
     def test_iterparse_strip(self):
         iterparse = self.etree.iterparse
@@ -795,6 +897,31 @@ class ETreeOnlyTestCase(HelperTestCase):
         # FIXME: would be nice to get some errors logged ...
         #self.assertTrue(len(parser.error_log) > 0, "error log is empty")
 
+    def test_feed_parser_recover_no_id_dict(self):
+        # test that recover mode plays nicely with the no-id-dict setup
+        parser = self.etree.XMLParser(recover=True, collect_ids=False)
+
+        parser.feed('<?xml version=')
+        parser.feed('"1.0"?><ro')
+        parser.feed('ot xml:id="123"><')
+        parser.feed('a test="works" xml:id=')
+        parser.feed('"321"><othertag/></root') # <a> not closed!
+        parser.feed('>')
+
+        root = parser.close()
+
+        self.assertEqual(root.tag, "root")
+        self.assertEqual(len(root), 1)
+        self.assertEqual(root[0].tag, "a")
+        self.assertEqual(root[0].get("test"), "works")
+        self.assertEqual(root[0].attrib, {
+            'test': 'works',
+            '{http://www.w3.org/XML/1998/namespace}id': '321'})
+        self.assertEqual(len(root[0]), 1)
+        self.assertEqual(root[0][0].tag, "othertag")
+        # FIXME: would be nice to get some errors logged ...
+        #self.assertTrue(len(parser.error_log) > 0, "error log is empty")
+
     def test_elementtree_parser_target_type_error(self):
         assertEqual = self.assertEqual
         assertFalse  = self.assertFalse
@@ -873,8 +1000,34 @@ class ETreeOnlyTestCase(HelperTestCase):
             done = 'value error received as expected'
 
         self.assertEqual(["start-root", "data-A", "start-a",
-                           "data-ca", "end-a", "close"],
-                          events)
+                          "data-ca", "end-a", "close"],
+                         events)
+
+    def test_parser_target_feed_no_id_dict(self):
+        # test that target parsing works nicely with the no-id-hash setup
+        events = []
+        class Target(object):
+            def start(self, tag, attrib):
+                events.append("start-" + tag)
+            def end(self, tag):
+                events.append("end-" + tag)
+            def data(self, data):
+                events.append("data-" + data)
+            def comment(self, text):
+                events.append("comment-" + text)
+            def close(self):
+                return "DONE"
+
+        parser = self.etree.XMLParser(target=Target(), collect_ids=False)
+
+        parser.feed(_bytes('<!--a--><root xml:id="123">A<!--b-->'))
+        parser.feed(_bytes('<sub xml:id="321"/>B</root>'))
+        done = parser.close()
+
+        self.assertEqual("DONE", done)
+        self.assertEqual(["comment-a", "start-root", "data-A", "comment-b",
+                          "start-sub", "end-sub", "data-B", "end-root"],
+                         events)
 
     def test_parser_target_comment(self):
         events = []
@@ -1162,15 +1315,18 @@ class ETreeOnlyTestCase(HelperTestCase):
 
         class MyResolver(self.etree.Resolver):
             def resolve(self, url, id, context):
-                assertEqual(url, fileInTestDir(test_url))
+                expected = fileUrlInTestDir(test_url)
+                url = url.replace('file://', 'file:')  # depends on libxml2 version
+                expected = expected.replace('file://', 'file:')
+                assertEqual(url, expected)
                 return self.resolve_filename(
-                    fileInTestDir('test.dtd'), context)
+                    fileUrlInTestDir('test.dtd'), context)
 
         parser.resolvers.add(MyResolver())
 
         xml = _str('<!DOCTYPE a SYSTEM "%s"><a><b/></a>') % test_url
         tree = parse(StringIO(xml), parser,
-                     base_url=fileInTestDir('__test.xml'))
+                     base_url=fileUrlInTestDir('__test.xml'))
         root = tree.getroot()
         self.assertEqual(
             root.attrib,    {'default': 'valueA'})
@@ -1317,6 +1473,27 @@ class ETreeOnlyTestCase(HelperTestCase):
         self.assertEqual(_bytes('<root><![CDATA[test]]></root>'),
                           tostring(root))
 
+    def test_cdata_tail(self):
+        CDATA = self.etree.CDATA
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+        tostring = self.etree.tostring
+
+        root = Element("root")
+        child = SubElement(root, 'child')
+        child.tail = CDATA('test')
+
+        self.assertEqual('test', child.tail)
+        self.assertEqual(_bytes('<root><child/><![CDATA[test]]></root>'),
+                         tostring(root))
+
+        root = Element("root")
+        root.tail = CDATA('test')
+
+        self.assertEqual('test', root.tail)
+        self.assertEqual(_bytes('<root/><![CDATA[test]]>'),
+                         tostring(root))
+
     def test_cdata_type(self):
         CDATA = self.etree.CDATA
         Element = self.etree.Element
@@ -1336,9 +1513,7 @@ class ETreeOnlyTestCase(HelperTestCase):
 
         root = Element("root")
         cdata = CDATA('test')
-        
-        self.assertRaises(TypeError,
-                          setattr, root, 'tail', cdata)
+
         self.assertRaises(TypeError,
                           root.set, 'attr', cdata)
         self.assertRaises(TypeError,
@@ -1419,6 +1594,48 @@ class ETreeOnlyTestCase(HelperTestCase):
         root[0].addprevious(root[1])
         self.assertEqual(['b', 'a'],
                           [c.tag for c in root])
+
+    def test_addnext_cycle(self):
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+        root = Element('root')
+        a = SubElement(root, 'a')
+        b = SubElement(a, 'b')
+        # appending parent as sibling is forbidden
+        self.assertRaises(ValueError, b.addnext, a)
+        self.assertEqual(['a'], [c.tag for c in root])
+        self.assertEqual(['b'], [c.tag for c in a])
+
+    def test_addprevious_cycle(self):
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+        root = Element('root')
+        a = SubElement(root, 'a')
+        b = SubElement(a, 'b')
+        # appending parent as sibling is forbidden
+        self.assertRaises(ValueError, b.addprevious, a)
+        self.assertEqual(['a'], [c.tag for c in root])
+        self.assertEqual(['b'], [c.tag for c in a])
+
+    def test_addnext_cycle_long(self):
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+        root = Element('root')
+        a = SubElement(root, 'a')
+        b = SubElement(a, 'b')
+        c = SubElement(b, 'c')
+        # appending parent as sibling is forbidden
+        self.assertRaises(ValueError, c.addnext, a)
+
+    def test_addprevious_cycle_long(self):
+        Element = self.etree.Element
+        SubElement = self.etree.SubElement
+        root = Element('root')
+        a = SubElement(root, 'a')
+        b = SubElement(a, 'b')
+        c = SubElement(b, 'c')
+        # appending parent as sibling is forbidden
+        self.assertRaises(ValueError, c.addprevious, a)
 
     def test_addprevious_noops(self):
         Element = self.etree.Element
@@ -1629,7 +1846,34 @@ class ETreeOnlyTestCase(HelperTestCase):
         self.assertRaises(TypeError, c.insert, 0, el)
         self.assertRaises(TypeError, c.set, "myattr", "test")
 
-    # test passing 'None' to dump
+    def test_comment_immutable_attrib(self):
+        c = self.etree.Comment()
+        self.assertEqual(0, len(c.attrib))
+
+        self.assertFalse(c.attrib.__contains__('nope'))
+        self.assertFalse('nope' in c.attrib)
+        self.assertFalse('nope' in c.attrib.keys())
+        self.assertFalse('nope' in c.attrib.values())
+        self.assertFalse(('nope', 'huhu') in c.attrib.items())
+
+        self.assertEqual([], list(c.attrib))
+        self.assertEqual([], list(c.attrib.keys()))
+        self.assertEqual([], list(c.attrib.items()))
+        self.assertEqual([], list(c.attrib.values()))
+        self.assertEqual([], list(c.attrib.iterkeys()))
+        self.assertEqual([], list(c.attrib.iteritems()))
+        self.assertEqual([], list(c.attrib.itervalues()))
+
+        self.assertEqual('HUHU', c.attrib.pop('nope', 'HUHU'))
+        self.assertRaises(KeyError, c.attrib.pop, 'nope')
+
+        self.assertRaises(KeyError, c.attrib.__getitem__, 'only')
+        self.assertRaises(KeyError, c.attrib.__getitem__, 'names')
+        self.assertRaises(KeyError, c.attrib.__getitem__, 'nope')
+        self.assertRaises(KeyError, c.attrib.__setitem__, 'nope', 'yep')
+        self.assertRaises(KeyError, c.attrib.__delitem__, 'nope')
+
+    # test passing 'None' to dump()
     def test_dump_none(self):
         self.assertRaises(TypeError, self.etree.dump, None)
 
@@ -2134,6 +2378,34 @@ class ETreeOnlyTestCase(HelperTestCase):
         expected = {}
         self._checkIDDict(dic, expected)
 
+    def test_XMLDTDID_no_id_dict(self):
+        XMLDTDID = self.etree.XMLDTDID
+        XML      = self.etree.XML
+        xml_text = _bytes('''
+        <!DOCTYPE document [
+        <!ELEMENT document (h1,p)*>
+        <!ELEMENT h1 (#PCDATA)>
+        <!ATTLIST h1 myid ID #REQUIRED>
+        <!ELEMENT p  (#PCDATA)>
+        <!ATTLIST p  someid ID #REQUIRED>
+        ]>
+        <document>
+          <h1 myid="chapter1">...</h1>
+          <p id="note1" class="note">...</p>
+          <p>Regular paragraph.</p>
+          <p xml:id="xmlid">XML:ID paragraph.</p>
+          <p someid="warn1" class="warning">...</p>
+        </document>
+        ''')
+
+        parser = etree.XMLParser(collect_ids=False)
+        root, dic = XMLDTDID(xml_text, parser=parser)
+        root2 = XML(xml_text)
+        self.assertEqual(self._writeElement(root),
+                         self._writeElement(root2))
+        self.assertFalse(dic)
+        self._checkIDDict(dic, {})
+
     def _checkIDDict(self, dic, expected):
         self.assertEqual(len(dic),
                           len(expected))
@@ -2178,6 +2450,17 @@ class ETreeOnlyTestCase(HelperTestCase):
             e.tag)
         self.assertEqual(
             _bytes('<bar xmlns="http://ns.infrae.com/foo"></bar>'),
+            self._writeElement(e))
+
+    def test_namespaces_default_and_other(self):
+        etree = self.etree
+
+        r = {None: 'http://ns.infrae.com/foo', 'p': 'http://test/'}
+        e = etree.Element('{http://ns.infrae.com/foo}bar', nsmap=r)
+        self.assertEqual(None, e.prefix)
+        self.assertEqual('{http://ns.infrae.com/foo}bar', e.tag)
+        self.assertEqual(
+            _bytes('<bar xmlns="http://ns.infrae.com/foo" xmlns:p="http://test/"></bar>'),
             self._writeElement(e))
 
     def test_namespaces_default_and_attr(self):
@@ -2349,13 +2632,108 @@ class ETreeOnlyTestCase(HelperTestCase):
             self.etree.tostring(two))
 
     def test_namespace_cleanup(self):
-        xml = _bytes('<foo xmlns="F" xmlns:x="x"><bar xmlns:ns="NS" xmlns:b="b" xmlns="B"><ns:baz/></bar></foo>')
+        xml = _bytes(
+            '<foo xmlns="F" xmlns:x="x">'
+            '<bar xmlns:ns="NS" xmlns:b="b" xmlns="B">'
+            '<ns:baz/>'
+            '</bar></foo>'
+        )
         root = self.etree.fromstring(xml)
-        self.assertEqual(xml,
-                          self.etree.tostring(root))
+        self.assertEqual(xml, self.etree.tostring(root))
         self.etree.cleanup_namespaces(root)
         self.assertEqual(
             _bytes('<foo xmlns="F"><bar xmlns:ns="NS" xmlns="B"><ns:baz/></bar></foo>'),
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_attributes(self):
+        xml = _bytes(
+            '<foo xmlns="F" xmlns:x="X" xmlns:a="A">'
+            '<bar xmlns:ns="NS" xmlns:b="b" xmlns="B">'
+            '<ns:baz a:test="attr"/>'
+            '</bar></foo>'
+        )
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(root)
+        self.assertEqual(
+            _bytes('<foo xmlns="F" xmlns:a="A">'
+                   '<bar xmlns:ns="NS" xmlns="B">'
+                   '<ns:baz a:test="attr"/>'
+                   '</bar></foo>'),
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_many(self):
+        xml = ('<n12:foo ' +
+               ' '.join('xmlns:n{n}="NS{n}"'.format(n=i) for i in range(100)) +
+               '><n68:a/></n12:foo>').encode('utf8')
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(root)
+        self.assertEqual(
+            b'<n12:foo xmlns:n12="NS12" xmlns:n68="NS68"><n68:a/></n12:foo>',
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_deep(self):
+        xml = ('<root>' +
+               ''.join('<a xmlns:n{n}="NS{n}">'.format(n=i) for i in range(100)) +
+               '<n64:x/>' + '</a>'*100 + '</root>').encode('utf8')
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(root)
+        self.assertEqual(
+            b'<root>' + b'<a>'*64 + b'<a xmlns:n64="NS64">' + b'<a>'*35 +
+            b'<n64:x/>' + b'</a>'*100 + b'</root>',
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_deep_to_top(self):
+        xml = ('<root>' +
+               ''.join('<a xmlns:n{n}="NS{n}">'.format(n=i) for i in range(100)) +
+               '<n64:x xmlns:a="A" a:attr="X"/>' +
+               '</a>'*100 +
+               '</root>').encode('utf8')
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(root, top_nsmap={'n64': 'NS64'})
+        self.assertEqual(
+            b'<root xmlns:n64="NS64">' + b'<a>'*100 +
+            b'<n64:x xmlns:a="A" a:attr="X"/>' + b'</a>'*100 + b'</root>',
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_keep_prefixes(self):
+        xml = ('<root xmlns:n64="NS64" xmlns:foo="FOO" xmlns:unused1="UNUSED" xmlns:no="NO">'
+               '<a xmlns:unused2="UNUSED"><n64:x xmlns:a="A" a:attr="X"/></a>'
+               '<foo>foo:bar</foo>'
+               '</root>').encode('utf8')
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(root, keep_ns_prefixes=['foo'])
+        self.assertEqual(
+            b'<root xmlns:n64="NS64" xmlns:foo="FOO">'
+            b'<a><n64:x xmlns:a="A" a:attr="X"/></a>'
+            b'<foo>foo:bar</foo>'
+            b'</root>',
+            self.etree.tostring(root))
+
+    def test_namespace_cleanup_keep_prefixes_top(self):
+        xml = ('<root xmlns:n64="NS64" xmlns:unused1="UNUSED" xmlns:no="NO">'
+               '<sub xmlns:foo="FOO">'
+               '<a xmlns:unused2="UNUSED"><n64:x xmlns:a="A" a:attr="X"/></a>'
+               '<foo>foo:bar</foo>'
+               '</sub>'
+               '</root>').encode('utf8')
+        root = self.etree.fromstring(xml)
+        self.assertEqual(xml, self.etree.tostring(root))
+        self.etree.cleanup_namespaces(
+            root,
+            top_nsmap={'foo': 'FOO', 'unused1': 'UNUSED'},
+            keep_ns_prefixes=['foo'])
+        self.assertEqual(
+            b'<root xmlns:n64="NS64" xmlns:foo="FOO">'
+            b'<sub>'
+            b'<a><n64:x xmlns:a="A" a:attr="X"/></a>'
+            b'<foo>foo:bar</foo>'
+            b'</sub>'
+            b'</root>',
             self.etree.tostring(root))
 
     def test_element_nsmap(self):
@@ -2563,6 +2941,69 @@ class ETreeOnlyTestCase(HelperTestCase):
             [a, b, c],
             list(a.getiterator('*')))
 
+    def test_elementtree_getelementpath(self):
+        a  = etree.Element("a")
+        b  = etree.SubElement(a, "b")
+        c  = etree.SubElement(a, "c")
+        d1 = etree.SubElement(c, "d")
+        d2 = etree.SubElement(c, "d")
+        c.text = d1.text = 'TEXT'
+
+        tree = etree.ElementTree(a)
+        self.assertEqual('.', tree.getelementpath(a))
+        self.assertEqual('c/d[1]', tree.getelementpath(d1))
+        self.assertEqual('c/d[2]', tree.getelementpath(d2))
+
+        self.assertEqual(d1, tree.find(tree.getelementpath(d1)))
+        self.assertEqual(d2, tree.find(tree.getelementpath(d2)))
+
+        tree = etree.ElementTree(c)
+        self.assertEqual('.', tree.getelementpath(c))
+        self.assertEqual('d[2]', tree.getelementpath(d2))
+        self.assertEqual(d2, tree.find(tree.getelementpath(d2)))
+
+        tree = etree.ElementTree(b)  # not a parent of a/c/d1/d2
+        self.assertEqual('.', tree.getelementpath(b))
+        self.assertRaises(ValueError, tree.getelementpath, a)
+        self.assertRaises(ValueError, tree.getelementpath, c)
+        self.assertRaises(ValueError, tree.getelementpath, d2)
+
+    def test_elementtree_getelementpath_ns(self):
+        a  = etree.Element("{http://ns1/}a")
+        b  = etree.SubElement(a, "{http://ns1/}b")
+        c  = etree.SubElement(a, "{http://ns1/}c")
+        d1 = etree.SubElement(c, "{http://ns1/}d")
+        d2 = etree.SubElement(c, "{http://ns2/}d")
+        d3 = etree.SubElement(c, "{http://ns1/}d")
+
+        tree = etree.ElementTree(a)
+        self.assertEqual('.', tree.getelementpath(a))
+        self.assertEqual('{http://ns1/}c/{http://ns1/}d[1]',
+                         tree.getelementpath(d1))
+        self.assertEqual('{http://ns1/}c/{http://ns2/}d',
+                         tree.getelementpath(d2))
+        self.assertEqual('{http://ns1/}c/{http://ns1/}d[2]',
+                         tree.getelementpath(d3))
+
+        self.assertEqual(a, tree.find(tree.getelementpath(a)))
+        self.assertEqual(b, tree.find(tree.getelementpath(b)))
+        self.assertEqual(c, tree.find(tree.getelementpath(c)))
+        self.assertEqual(d1, tree.find(tree.getelementpath(d1)))
+        self.assertEqual(d2, tree.find(tree.getelementpath(d2)))
+        self.assertEqual(d3, tree.find(tree.getelementpath(d3)))
+
+        tree = etree.ElementTree(c)
+        self.assertEqual('{http://ns1/}d[1]', tree.getelementpath(d1))
+        self.assertEqual('{http://ns2/}d', tree.getelementpath(d2))
+        self.assertEqual('{http://ns1/}d[2]', tree.getelementpath(d3))
+        self.assertEqual(d1, tree.find(tree.getelementpath(d1)))
+        self.assertEqual(d2, tree.find(tree.getelementpath(d2)))
+        self.assertEqual(d3, tree.find(tree.getelementpath(d3)))
+
+        tree = etree.ElementTree(b)  # not a parent of d1/d2
+        self.assertRaises(ValueError, tree.getelementpath, d1)
+        self.assertRaises(ValueError, tree.getelementpath, d2)
+
     def test_elementtree_find_qname(self):
         XML = self.etree.XML
         ElementTree = self.etree.ElementTree
@@ -2605,17 +3046,15 @@ class ETreeOnlyTestCase(HelperTestCase):
         self.assertEqual(len(root.findall(".//xx:*", namespaces=nsmap)), 1)
         self.assertEqual(len(root.findall(".//b", namespaces=nsmap)), 2)
 
-    def test_findall_different_nsmaps(self):
+    def test_findall_empty_prefix(self):
         XML = self.etree.XML
         root = XML(_bytes('<a xmlns:x="X" xmlns:y="Y"><x:b><c/></x:b><b/><c><x:b/><b/></c><y:b/></a>'))
         nsmap = {'xx': 'X'}
         self.assertEqual(len(root.findall(".//xx:b", namespaces=nsmap)), 2)
-        self.assertEqual(len(root.findall(".//xx:*", namespaces=nsmap)), 2)
-        self.assertEqual(len(root.findall(".//b", namespaces=nsmap)), 2)
-        nsmap = {'xx': 'Y'}
-        self.assertEqual(len(root.findall(".//xx:b", namespaces=nsmap)), 1)
-        self.assertEqual(len(root.findall(".//xx:*", namespaces=nsmap)), 1)
-        self.assertEqual(len(root.findall(".//b", namespaces=nsmap)), 2)
+        nsmap = {'xx': 'X', None: 'Y'}
+        self.assertRaises(ValueError, root.findall, ".//xx:b", namespaces=nsmap)
+        nsmap = {'xx': 'X', '': 'Y'}
+        self.assertRaises(ValueError, root.findall, ".//xx:b", namespaces=nsmap)
 
     def test_findall_syntax_error(self):
         XML = self.etree.XML
@@ -2817,6 +3256,22 @@ class ETreeOnlyTestCase(HelperTestCase):
         self.assertEqual(
             [2, 2, 4],
             [ el.sourceline for el in root.getiterator() ])
+
+    def test_large_sourceline_XML(self):
+        XML = self.etree.XML
+        root = XML(_bytes(
+            '<?xml version="1.0"?>\n'
+            '<root>' + '\n' * 65536 +
+            '<p>' + '\n' * 65536 + '</p>\n' +
+            '<br/>\n'
+            '</root>'))
+
+        if self.etree.LIBXML_VERSION >= (2, 9):
+            expected = [2, 131074, 131076]
+        else:
+            expected = [2, 65535, 65535]
+
+        self.assertEqual(expected, [el.sourceline for el in root.iter()])
 
     def test_sourceline_parse(self):
         parse = self.etree.parse
@@ -3149,6 +3604,29 @@ class ETreeOnlyTestCase(HelperTestCase):
         result = tostring(a, with_tail=True)
         self.assertEqual(result, _bytes("<a><b/>bTAIL<c/></a>aTAIL"))
 
+    def test_tostring_method_html_with_tail(self):
+        tostring = self.etree.tostring
+        html = self.etree.fromstring(
+            '<html><body>'
+            '<div><p>Some text<i>\r\n</i></p></div>\r\n'
+            '</body></html>',
+            parser=self.etree.HTMLParser())
+        self.assertEqual(html.tag, 'html')
+        div = html.find('.//div')
+        self.assertEqual(div.tail, '\r\n')
+        result = tostring(div, method='html')
+        self.assertEqual(
+            result,
+            _bytes("<div><p>Some text<i>\r\n</i></p></div>\r\n"))
+        result = tostring(div, method='html', with_tail=True)
+        self.assertEqual(
+            result,
+            _bytes("<div><p>Some text<i>\r\n</i></p></div>\r\n"))
+        result = tostring(div, method='html', with_tail=False)
+        self.assertEqual(
+            result,
+            _bytes("<div><p>Some text<i>\r\n</i></p></div>"))
+
     def test_standalone(self):
         tostring = self.etree.tostring
         XML = self.etree.XML
@@ -3421,6 +3899,37 @@ class ETreeOnlyTestCase(HelperTestCase):
         gc.collect()
         # not really testing anything here, but it shouldn't crash
 
+    def test_proxy_collect_siblings(self):
+        root = etree.Element('parent')
+        c1 = etree.SubElement(root, 'child1')
+        c2 = etree.SubElement(root, 'child2')
+
+        root.remove(c1)
+        root.remove(c2)
+        c1.addnext(c2)
+        del c1
+        # trigger deallocation attempt of c1
+        c2.getprevious()
+        # make sure it wasn't deallocated
+        self.assertEqual('child1', c2.getprevious().tag)
+
+    def test_proxy_collect_siblings_text(self):
+        root = etree.Element('parent')
+        c1 = etree.SubElement(root, 'child1')
+        c2 = etree.SubElement(root, 'child2')
+
+        root.remove(c1)
+        root.remove(c2)
+        c1.addnext(c2)
+        c1.tail = 'abc'
+        c2.tail = 'xyz'
+        del c1
+        # trigger deallocation attempt of c1
+        c2.getprevious()
+        # make sure it wasn't deallocated
+        self.assertEqual('child1', c2.getprevious().tag)
+        self.assertEqual('abc', c2.getprevious().tail)
+
     # helper methods
 
     def _writeElement(self, element, encoding='us-ascii', compression=0):
@@ -3443,7 +3952,7 @@ class _XIncludeTestCase(HelperTestCase):
         <doc xmlns:xi="http://www.w3.org/2001/XInclude">
           <xi:include href="%s" parse="text"/>
         </doc>
-        ''' % filename))
+        ''' % path2url(filename)))
         old_text = root.text
         content = read_file(filename)
         old_tail = root[0].tail
@@ -3495,6 +4004,51 @@ class _XIncludeTestCase(HelperTestCase):
             [("dtd", True), ("include", True), ("input", True)],
             called)
 
+    def test_xinclude_resolver_recursive(self):
+        data = textwrap.dedent('''
+        <doc xmlns:xi="http://www.w3.org/2001/XInclude">
+        <foo/>
+        <xi:include href="./test.xml" />
+        </doc>
+        ''')
+
+        class Resolver(etree.Resolver):
+            called = {}
+
+            def resolve(self, url, id, context):
+                if url.endswith("test_xinclude.xml"):
+                    assert not self.called.get("input")
+                    self.called["input"] = True
+                    return None  # delegate to default resolver
+                elif url.endswith('/test5.xml'):
+                    assert not self.called.get("DONE")
+                    self.called["DONE"] = True
+                    return self.resolve_string('<DONE/>', context)
+                else:
+                    _, filename = url.rsplit('/', 1)
+                    assert not self.called.get(filename)
+                    self.called[filename] = True
+                    next_data = data.replace(
+                        'test.xml', 'test%d.xml' % len(self.called))
+                    return self.resolve_string(next_data, context)
+
+        res_instance = Resolver()
+        parser = etree.XMLParser(load_dtd=True)
+        parser.resolvers.add(res_instance)
+
+        tree = etree.parse(fileInTestDir('include/test_xinclude.xml'),
+                           parser=parser)
+
+        self.include(tree)
+
+        called = list(res_instance.called.items())
+        called.sort()
+        self.assertEqual(
+            [("DONE", True), ("input", True), ("test.xml", True),
+             ("test2.xml", True), ("test3.xml", True), ("test4.xml", True)],
+            called)
+
+
 class ETreeXIncludeTestCase(_XIncludeTestCase):
     def include(self, tree):
         tree.xinclude()
@@ -3519,39 +4073,25 @@ class ETreeC14NTestCase(HelperTestCase):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
         f = BytesIO()
         tree.write_c14n(f, compression=9)
-        gzfile = gzip.GzipFile(fileobj=BytesIO(f.getvalue()))
-        try:
+        with closing(gzip.GzipFile(fileobj=BytesIO(f.getvalue()))) as gzfile:
             s = gzfile.read()
-        finally:
-            gzfile.close()
         self.assertEqual(_bytes('<a>'+'<b></b>'*200+'</a>'),
                           s)
 
     def test_c14n_file(self):
         tree = self.parse(_bytes('<a><b/></a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write_c14n(filename)
             data = read_file(filename, 'rb')
-        finally:
-            os.close(handle)
-            os.remove(filename)
         self.assertEqual(_bytes('<a><b></b></a>'),
                           data)
 
     def test_c14n_file_gzip(self):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write_c14n(filename, compression=9)
-            f = gzip.open(filename, 'rb')
-            try:
+            with closing(gzip.open(filename, 'rb')) as f:
                 data = f.read()
-            finally:
-                f.close()
-        finally:
-            os.close(handle)
-            os.remove(filename)
         self.assertEqual(_bytes('<a>'+'<b></b>'*200+'</a>'),
                           data)
 
@@ -3682,16 +4222,30 @@ class ETreeWriteTestCase(HelperTestCase):
         self.assertEqual(_bytes('<a><b/></a>'),
                           s)
 
+    def test_write_doctype(self):
+        tree = self.parse(_bytes('<a><b/></a>'))
+        f = BytesIO()
+        tree.write(f, doctype='HUHU')
+        s = f.getvalue()
+        self.assertEqual(_bytes('HUHU\n<a><b/></a>'),
+                          s)
+
     def test_write_gzip(self):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
         f = BytesIO()
         tree.write(f, compression=9)
-        gzfile = gzip.GzipFile(fileobj=BytesIO(f.getvalue()))
-        try:
+        with closing(gzip.GzipFile(fileobj=BytesIO(f.getvalue()))) as gzfile:
             s = gzfile.read()
-        finally:
-            gzfile.close()
         self.assertEqual(_bytes('<a>'+'<b/>'*200+'</a>'),
+                          s)
+
+    def test_write_gzip_doctype(self):
+        tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
+        f = BytesIO()
+        tree.write(f, compression=9, doctype='<!DOCTYPE a>')
+        with closing(gzip.GzipFile(fileobj=BytesIO(f.getvalue()))) as gzfile:
+            s = gzfile.read()
+        self.assertEqual(_bytes('<!DOCTYPE a>\n<a>'+'<b/>'*200+'</a>'),
                           s)
 
     def test_write_gzip_level(self):
@@ -3708,21 +4262,15 @@ class ETreeWriteTestCase(HelperTestCase):
         tree.write(f, compression=1)
         s = f.getvalue()
         self.assertTrue(len(s) <= len(s0))
-        gzfile = gzip.GzipFile(fileobj=BytesIO(s))
-        try:
+        with closing(gzip.GzipFile(fileobj=BytesIO(s))) as gzfile:
             s1 = gzfile.read()
-        finally:
-            gzfile.close()
 
         f = BytesIO()
         tree.write(f, compression=9)
         s = f.getvalue()
         self.assertTrue(len(s) <= len(s0))
-        gzfile = gzip.GzipFile(fileobj=BytesIO(s))
-        try:
+        with closing(gzip.GzipFile(fileobj=BytesIO(s))) as gzfile:
             s9 = gzfile.read()
-        finally:
-            gzfile.close()
 
         self.assertEqual(_bytes('<a>'+'<b/>'*200+'</a>'),
                           s0)
@@ -3733,56 +4281,38 @@ class ETreeWriteTestCase(HelperTestCase):
 
     def test_write_file(self):
         tree = self.parse(_bytes('<a><b/></a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write(filename)
             data = read_file(filename, 'rb')
-        finally:
-            os.close(handle)
-            os.remove(filename)
         self.assertEqual(_bytes('<a><b/></a>'),
                           data)
 
     def test_write_file_gzip(self):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write(filename, compression=9)
-            f = gzip.open(filename, 'rb')
-            try:
+            with closing(gzip.open(filename, 'rb')) as f:
                 data = f.read()
-            finally:
-                f.close()
-        finally:
-            os.close(handle)
-            os.remove(filename)
         self.assertEqual(_bytes('<a>'+'<b/>'*200+'</a>'),
                           data)
 
     def test_write_file_gzip_parse(self):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write(filename, compression=9)
             data = etree.tostring(etree.parse(filename))
-        finally:
-            os.close(handle)
-            os.remove(filename)
         self.assertEqual(_bytes('<a>'+'<b/>'*200+'</a>'),
                           data)
 
     def test_write_file_gzipfile_parse(self):
         tree = self.parse(_bytes('<a>'+'<b/>'*200+'</a>'))
-        handle, filename = tempfile.mkstemp()
-        try:
+        with tmpfile() as filename:
             tree.write(filename, compression=9)
-            data = etree.tostring(etree.parse(
-                gzip.GzipFile(filename)))
-        finally:
-            os.close(handle)
-            os.remove(filename)
+            with closing(gzip.GzipFile(filename)) as f:
+                data = etree.tostring(etree.parse(f))
         self.assertEqual(_bytes('<a>'+'<b/>'*200+'</a>'),
                           data)
+
 
 class ETreeErrorLogTest(HelperTestCase):
     etree = etree
@@ -3962,6 +4492,14 @@ def test_suite():
     suite.addTests([unittest.makeSuite(ETreeWriteTestCase)])
     suite.addTests([unittest.makeSuite(ETreeErrorLogTest)])
     suite.addTests([unittest.makeSuite(XMLPullParserTest)])
+
+    # add original doctests from ElementTree selftest modules
+    from . import selftest, selftest2
+    suite.addTests(doctest.DocTestSuite(selftest))
+    suite.addTests(doctest.DocTestSuite(selftest2))
+
+    # add doctests
+    suite.addTests(doctest.DocTestSuite(etree))
     suite.addTests(
         [make_doctest('../../../doc/tutorial.txt')])
     if sys.version_info >= (2,6):
@@ -3975,6 +4513,7 @@ def test_suite():
     suite.addTests(
         [make_doctest('../../../doc/resolvers.txt')])
     return suite
+
 
 if __name__ == '__main__':
     print('to test use test.py %s' % __file__)

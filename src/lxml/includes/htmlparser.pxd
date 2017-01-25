@@ -1,7 +1,8 @@
-from lxml.includes.tree cimport xmlDoc, xmlDict
+from libc.string cimport const_char
+
+from lxml.includes.tree cimport xmlDoc
 from lxml.includes.tree cimport xmlInputReadCallback, xmlInputCloseCallback
 from lxml.includes.xmlparser cimport xmlParserCtxt, xmlSAXHandler, xmlSAXHandlerV1
-from lxml.includes.xmlerror cimport xmlError
 
 cdef extern from "libxml/HTMLparser.h":
     ctypedef enum htmlParserOption:
@@ -13,6 +14,12 @@ cdef extern from "libxml/HTMLparser.h":
         # libxml2 2.6.21+ only:
         HTML_PARSE_RECOVER    # Relaxed parsing
         HTML_PARSE_COMPACT    # compact small text nodes
+        # libxml2 2.7.7+ only:
+        HTML_PARSE_NOIMPLIED  # Do not add implied html/body... elements
+        # libxml2 2.7.8+ only:
+        HTML_PARSE_NODEFDTD   # do not default a doctype if not found
+        # libxml2 2.8.0+ only:
+        XML_PARSE_IGNORE_ENC  # ignore internal document encoding hint
 
     xmlSAXHandlerV1 htmlDefaultSAXHandler
 
@@ -32,18 +39,18 @@ cdef extern from "libxml/HTMLparser.h":
                             char* chunk, int size, int terminate) nogil
 
     cdef xmlDoc* htmlCtxtReadFile(xmlParserCtxt* ctxt,
-                                  char* filename, char* encoding,
+                                  char* filename, const_char* encoding,
                                   int options) nogil
     cdef xmlDoc* htmlCtxtReadDoc(xmlParserCtxt* ctxt,
-                                 char* buffer, char* URL, char* encoding,
+                                 char* buffer, char* URL, const_char* encoding,
                                  int options) nogil
     cdef xmlDoc* htmlCtxtReadIO(xmlParserCtxt* ctxt, 
                                 xmlInputReadCallback ioread, 
                                 xmlInputCloseCallback ioclose, 
                                 void* ioctx,
-                                char* URL, char* encoding,
+                                char* URL, const_char* encoding,
                                 int options) nogil
     cdef xmlDoc* htmlCtxtReadMemory(xmlParserCtxt* ctxt,
                                     char* buffer, int size,
-                                    char* filename, char* encoding,
+                                    char* filename, const_char* encoding,
                                     int options) nogil
